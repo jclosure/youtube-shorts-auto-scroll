@@ -4,9 +4,10 @@ Auto-scrolls to the next YouTube Short when the current video ends.
 
 ## Features
 
-- Listens for `video` `ended` events on YouTube Shorts pages.
-- Clicks the **Next video** control automatically.
-- Handles SPA-style updates via `MutationObserver`.
+- Listens for `video` `ended` events on Shorts.
+- Uses a playback-threshold fallback when `ended` is unreliable.
+- Clicks the **Next video** control automatically (with keyboard fallback).
+- Handles YouTube SPA navigation + dynamic DOM updates.
 - Simple, no-build, edit-in-place extension workflow.
 
 ## Match URL
