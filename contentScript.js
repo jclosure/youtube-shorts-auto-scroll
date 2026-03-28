@@ -10,14 +10,40 @@
   }
 
   function getVideo() {
-    return document.querySelector('[data-no-fullscreen="true"]');
+    return (
+      document.querySelector('[data-no-fullscreen="true"]') ||
+      document.querySelector('ytd-reel-video-renderer video') ||
+      document.querySelector('video')
+    );
+  }
+
+  function getNextButton() {
+    const selectors = [
+      'button[aria-label="Next video"]',
+      'button[aria-label*="Next"]',
+      '#navigation-button-down button',
+      'ytd-reel-player-overlay-renderer #navigation-button-down button',
+      '.navigation-button + * button',
+      '.navigation-container .navigation-button + * button'
+    ];
+
+    return selectors.map((s) => document.querySelector(s)).find(Boolean) || null;
   }
 
   function clickNext() {
-    const nav = document.querySelector('.navigation-button');
-    const nextWrap = nav?.nextElementSibling;
-    const nextBtn = nextWrap?.querySelector('button');
+    const nextBtn = getNextButton();
     if (!nextBtn) return false;
+
+    // Some Firefox builds respond better to explicit pointer/mouse events.
+    nextBtn.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
+    );
+    nextBtn.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    );
+    nextBtn.dispatchEvent(
+      new MouseEvent('mouseup', { bubbles: true, cancelable: true })
+    );
     nextBtn.click();
     return true;
   }
@@ -31,9 +57,22 @@
     lastAdvanceAt = now;
     advancedForCurrentVideo = true;
 
-    // Smooth transition: let current short finish, then move on.
     setTimeout(() => {
-      clickNext();
+      if (!clickNext()) {
+        // keyboard fallback (works in both Chrome and Firefox)
+        const ev = {
+          key: 'ArrowDown',
+          code: 'ArrowDown',
+          keyCode: 40,
+          which: 40,
+          bubbles: true,
+          cancelable: true
+        };
+        window.dispatchEvent(new KeyboardEvent('keydown', ev));
+        window.dispatchEvent(new KeyboardEvent('keyup', ev));
+        document.dispatchEvent(new KeyboardEvent('keydown', ev));
+        document.dispatchEvent(new KeyboardEvent('keyup', ev));
+      }
     }, 500);
   }
 
@@ -42,7 +81,6 @@
     if (!video || video.__ytShortsAutoScrollBound) return;
     video.__ytShortsAutoScrollBound = true;
 
-    // Re-arm for a new short.
     video.addEventListener('play', () => {
       if (video.currentTime < 0.5) advancedForCurrentVideo = false;
     });
@@ -51,7 +89,6 @@
       if (video.currentTime < 0.5) advancedForCurrentVideo = false;
     });
 
-    // Primary path: wait for real ended event.
     video.addEventListener('ended', () => {
       scheduleAdvance();
     });
@@ -65,7 +102,6 @@
 
     attachVideoEvents();
 
-    // Fallback: some players don't reliably emit ended in all states.
     const duration = video.duration;
     const current = video.currentTime;
     if (
