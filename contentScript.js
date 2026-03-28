@@ -1,186 +1,101 @@
-if (window.__ytShortsAutoScrollInitialized) {
-  console.debug("[YT-Shorts-AutoScroll] already initialized");
-} else {
+(() => {
+  if (window.__ytShortsAutoScrollInitialized) return;
   window.__ytShortsAutoScrollInitialized = true;
 
-  const registeredVideos = new WeakSet();
+  let advancedForCurrentVideo = false;
   let lastAdvanceAt = 0;
 
-  const state = {
-    currentVideo: null,
-    lastTime: 0,
-    nearEnd: false,
-    lastPath: location.pathname
-  };
-
-  function log(...args) {
-    console.debug("[YT-Shorts-AutoScroll]", ...args);
-  }
-
   function onShortsPage() {
-    return location.pathname.startsWith("/shorts/");
+    return location.pathname.startsWith('/shorts/');
   }
 
-  function getNextButton() {
-    const selectors = [
-      'button[aria-label="Next video"]',
-      'button[aria-label*="Next video"]',
-      '#navigation-button-down button',
-      'ytd-reel-player-overlay-renderer #navigation-button-down button',
-      'ytd-reel-player-overlay-renderer button.yt-spec-button-shape-next'
-    ];
-
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      if (el) return el;
-    }
-    return null;
+  function getVideo() {
+    return document.querySelector('[data-no-fullscreen="true"]');
   }
 
-  function keyboardFallback() {
-    const evInit = {
-      key: "ArrowDown",
-      code: "ArrowDown",
-      keyCode: 40,
-      which: 40,
-      bubbles: true,
-      cancelable: true
-    };
-
-    window.dispatchEvent(new KeyboardEvent("keydown", evInit));
-    window.dispatchEvent(new KeyboardEvent("keyup", evInit));
-    document.dispatchEvent(new KeyboardEvent("keydown", evInit));
-    document.dispatchEvent(new KeyboardEvent("keyup", evInit));
+  function clickNext() {
+    const nav = document.querySelector('.navigation-button');
+    const nextWrap = nav?.nextElementSibling;
+    const nextBtn = nextWrap?.querySelector('button');
+    if (!nextBtn) return false;
+    nextBtn.click();
+    return true;
   }
 
-  function advance(reason) {
+  function scheduleAdvance() {
     if (!onShortsPage()) return;
+    if (advancedForCurrentVideo) return;
 
     const now = Date.now();
     if (now - lastAdvanceAt < 1200) return;
     lastAdvanceAt = now;
+    advancedForCurrentVideo = true;
 
-    const btn = getNextButton();
-    if (btn) {
-      btn.click();
-      log(`advanced via button (${reason})`);
-      return;
-    }
-
-    keyboardFallback();
-    log(`advanced via keyboard fallback (${reason})`);
+    // Smooth transition: let current short finish, then move on.
+    setTimeout(() => {
+      clickNext();
+    }, 500);
   }
 
-  function handleVideoEnded() {
-    advance("ended-event");
-  }
+  function attachVideoEvents() {
+    const video = getVideo();
+    if (!video || video.__ytShortsAutoScrollBound) return;
+    video.__ytShortsAutoScrollBound = true;
 
-  function registerVideo(video) {
-    if (!video || registeredVideos.has(video)) return;
-    registeredVideos.add(video);
-    video.addEventListener("ended", handleVideoEnded);
-    log("registered video ended listener");
-  }
-
-  function findActiveVideo() {
-    const videos = Array.from(document.querySelectorAll("video"));
-    if (!videos.length) return null;
-
-    // Prefer currently playing, else first visible.
-    const playing = videos.find((v) => !v.paused && v.readyState >= 2);
-    if (playing) return playing;
-
-    const visible = videos.find((v) => {
-      const r = v.getBoundingClientRect();
-      return r.width > 100 && r.height > 100 && r.bottom > 0 && r.top < innerHeight;
+    // Re-arm for a new short.
+    video.addEventListener('play', () => {
+      if (video.currentTime < 0.5) advancedForCurrentVideo = false;
     });
 
-    return visible || videos[0];
+    video.addEventListener('seeked', () => {
+      if (video.currentTime < 0.5) advancedForCurrentVideo = false;
+    });
+
+    // Primary path: wait for real ended event.
+    video.addEventListener('ended', () => {
+      scheduleAdvance();
+    });
   }
 
   function monitorPlayback() {
     if (!onShortsPage()) return;
 
-    const v = findActiveVideo();
-    if (!v) return;
+    const video = getVideo();
+    if (!video) return;
 
-    registerVideo(v);
+    attachVideoEvents();
 
-    if (state.currentVideo !== v) {
-      state.currentVideo = v;
-      state.lastTime = v.currentTime || 0;
-      state.nearEnd = false;
-      log("active video changed");
-      return;
+    // Fallback: some players don't reliably emit ended in all states.
+    const duration = video.duration;
+    const current = video.currentTime;
+    if (
+      !advancedForCurrentVideo &&
+      Number.isFinite(duration) &&
+      duration > 0 &&
+      video.paused &&
+      current >= duration - 0.05
+    ) {
+      scheduleAdvance();
     }
-
-    const duration = v.duration;
-    const t = v.currentTime || 0;
-
-    if (Number.isFinite(duration) && duration > 1) {
-      // If we get near the end, mark it. Some Shorts loop and never emit `ended`.
-      if (t >= duration - 0.25) {
-        state.nearEnd = true;
-      }
-
-      // If video time resets after near-end (loop), move to next.
-      if (state.nearEnd && t < 0.7 && state.lastTime > duration - 0.25) {
-        state.nearEnd = false;
-        advance("loop-reset");
-      }
-
-      // Threshold fallback for edge cases.
-      if (!v.paused && t >= duration - 0.08) {
-        advance("threshold");
-      }
-    }
-
-    state.lastTime = t;
   }
 
   function bootstrap() {
-    if (!onShortsPage()) return;
-    const videos = document.querySelectorAll("video");
-    videos.forEach(registerVideo);
-    if (!videos.length) log("no videos found yet");
-  }
-
-  function routeChanged() {
-    if (location.pathname !== state.lastPath) {
-      state.lastPath = location.pathname;
-      state.currentVideo = null;
-      state.lastTime = 0;
-      state.nearEnd = false;
-      log("route changed", location.pathname);
-      setTimeout(bootstrap, 300);
-      setTimeout(bootstrap, 1200);
-    }
-  }
-
-  const mo = new MutationObserver(() => {
-    bootstrap();
-  });
-  mo.observe(document.documentElement || document.body, {
-    childList: true,
-    subtree: true
-  });
-
-  window.addEventListener("yt-navigate-finish", () => {
-    routeChanged();
-    bootstrap();
-  });
-  window.addEventListener("popstate", routeChanged);
-
-  if (document.readyState === "loading") {
-    window.addEventListener("load", () => setTimeout(bootstrap, 800), { once: true });
-  } else {
-    setTimeout(bootstrap, 800);
-  }
-
-  setInterval(() => {
-    routeChanged();
+    attachVideoEvents();
     monitorPlayback();
-  }, 250);
+  }
 
-  log("initialized");
-}
+  setInterval(bootstrap, 250);
+
+  window.addEventListener('yt-navigate-finish', () => {
+    advancedForCurrentVideo = false;
+    bootstrap();
+  });
+
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    bootstrap();
+  } else {
+    window.addEventListener('load', bootstrap, { once: true });
+  }
+
+  console.log('[YT-Shorts-AutoScroll] initialized');
+})();
