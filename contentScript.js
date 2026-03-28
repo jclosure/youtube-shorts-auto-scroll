@@ -1,173 +1,107 @@
-(() => {
-  if (window.__ytShortsAutoScrollInitialized) return;
-  window.__ytShortsAutoScrollInitialized = true;
+let activeVideo = null;
+let progressInterval = null;
 
-  let advancedForCurrentVideo = false;
-  let lastAdvanceAt = 0;
+function getVisibleVideo() {
+	const videos = Array.from(document.querySelectorAll("video"));
+	if (!videos.length) return null;
 
-  function onShortsPage() {
-    return location.pathname.startsWith('/shorts/');
-  }
+	const visible = videos.find((video) => {
+		const rect = video.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+	});
 
-  function getVideo() {
-    return (
-      document.querySelector('[data-no-fullscreen="true"]') ||
-      document.querySelector('ytd-reel-video-renderer video') ||
-      document.querySelector('video')
-    );
-  }
+	return visible || videos[0];
+}
 
-  function getNextButton() {
-    const selectors = [
-      'button[aria-label="Next video"]',
-      'button[aria-label*="Next"]',
-      '#navigation-button-down button',
-      'ytd-reel-player-overlay-renderer #navigation-button-down button',
-      '.navigation-button + * button',
-      '.navigation-container .navigation-button + * button'
-    ];
+function getNextButton() {
+	const selectors = [
+		'button[aria-label="Next video"]',
+		'button[aria-label*="Next"]',
+		"ytd-reel-player-overlay-renderer #navigation-button-down button",
+		".navigation-button + * button"
+	];
 
-    return selectors.map((s) => document.querySelector(s)).find(Boolean) || null;
-  }
+	for (const selector of selectors) {
+		const button = document.querySelector(selector);
+		if (button) return button;
+	}
 
-  function getNextShortUrl() {
-    const links = Array.from(document.querySelectorAll('a[href^="/shorts/"]'))
-      .map((a) => a.getAttribute('href'))
-      .filter(Boolean);
+	return null;
+}
 
-    const unique = [...new Set(links)];
-    if (!unique.length) return null;
+function goToNextShort() {
+	const nextButton = getNextButton();
+	if (nextButton) {
+		nextButton.click();
+		return;
+	}
 
-    const currentPath = location.pathname;
-    const idx = unique.findIndex((h) => h === currentPath || h.startsWith(currentPath));
+	// Fallback when YouTube changes button DOM.
+	document.dispatchEvent(
+		new KeyboardEvent("keydown", {
+			key: "ArrowDown",
+			code: "ArrowDown",
+			keyCode: 40,
+			which: 40,
+			bubbles: true
+		})
+	);
+}
 
-    if (idx >= 0 && idx + 1 < unique.length) {
-      return unique[idx + 1];
-    }
+function clearProgressInterval() {
+	if (progressInterval) {
+		clearInterval(progressInterval);
+		progressInterval = null;
+	}
+}
 
-    // fallback: first non-current short link
-    return unique.find((h) => h !== currentPath) || null;
-  }
+function onVideoEnded() {
+	clearProgressInterval();
+	setTimeout(goToNextShort, 10);
+}
 
-  function keyboardFallback() {
-    const ev = {
-      key: 'ArrowDown',
-      code: 'ArrowDown',
-      keyCode: 40,
-      which: 40,
-      bubbles: true,
-      cancelable: true
-    };
-    window.dispatchEvent(new KeyboardEvent('keydown', ev));
-    window.dispatchEvent(new KeyboardEvent('keyup', ev));
-    document.dispatchEvent(new KeyboardEvent('keydown', ev));
-    document.dispatchEvent(new KeyboardEvent('keyup', ev));
-  }
+function watchVideo(video) {
+	if (!video || video === activeVideo) return;
 
-  function clickNext() {
-    const nextBtn = getNextButton();
-    if (!nextBtn) return false;
+	if (activeVideo) {
+		activeVideo.removeEventListener("ended", onVideoEnded);
+	}
 
-    nextBtn.dispatchEvent(
-      new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
-    );
-    nextBtn.dispatchEvent(
-      new MouseEvent('mousedown', { bubbles: true, cancelable: true })
-    );
-    nextBtn.dispatchEvent(
-      new MouseEvent('mouseup', { bubbles: true, cancelable: true })
-    );
-    nextBtn.click();
-    return true;
-  }
+	clearProgressInterval();
+	activeVideo = video;
+	activeVideo.addEventListener("ended", onVideoEnded);
 
-  function forceNavigateNext() {
-    const href = getNextShortUrl();
-    if (!href) return false;
-    location.href = href;
-    return true;
-  }
+	progressInterval = setInterval(() => {
+		if (!activeVideo || !Number.isFinite(activeVideo.duration) || activeVideo.duration <= 0) return;
 
-  function scheduleAdvance() {
-    if (!onShortsPage()) return;
-    if (advancedForCurrentVideo) return;
+		const remaining = activeVideo.duration - activeVideo.currentTime;
+		if (remaining <= 0.25) {
+			onVideoEnded();
+		}
+	}, 500);
+}
 
-    const now = Date.now();
-    if (now - lastAdvanceAt < 1200) return;
-    lastAdvanceAt = now;
-    advancedForCurrentVideo = true;
+function attachToCurrentVideo() {
+	const video = getVisibleVideo();
+	if (!video) {
+		setTimeout(attachToCurrentVideo, 300);
+		return;
+	}
 
-    const beforePath = location.pathname;
+	if (video.readyState >= 1 && Number.isFinite(video.duration)) {
+		watchVideo(video);
+		return;
+	}
 
-    setTimeout(() => {
-      const clicked = clickNext();
-      if (!clicked) keyboardFallback();
+	video.addEventListener("loadedmetadata", () => watchVideo(video), { once: true });
+}
 
-      // If click/keyboard did not advance, force URL navigation.
-      setTimeout(() => {
-        if (location.pathname === beforePath) {
-          forceNavigateNext();
-        }
-      }, 900);
-    }, 500);
-  }
+const observer = new MutationObserver(() => {
+	attachToCurrentVideo();
+});
 
-  function attachVideoEvents() {
-    const video = getVideo();
-    if (!video || video.__ytShortsAutoScrollBound) return;
-    video.__ytShortsAutoScrollBound = true;
+observer.observe(document.documentElement, { childList: true, subtree: true });
+window.addEventListener("yt-navigate-finish", attachToCurrentVideo);
+window.addEventListener("popstate", () => setTimeout(attachToCurrentVideo, 100));
 
-    video.addEventListener('play', () => {
-      if (video.currentTime < 0.5) advancedForCurrentVideo = false;
-    });
-
-    video.addEventListener('seeked', () => {
-      if (video.currentTime < 0.5) advancedForCurrentVideo = false;
-    });
-
-    video.addEventListener('ended', () => {
-      scheduleAdvance();
-    });
-  }
-
-  function monitorPlayback() {
-    if (!onShortsPage()) return;
-
-    const video = getVideo();
-    if (!video) return;
-
-    attachVideoEvents();
-
-    const duration = video.duration;
-    const current = video.currentTime;
-    if (
-      !advancedForCurrentVideo &&
-      Number.isFinite(duration) &&
-      duration > 0 &&
-      video.paused &&
-      current >= duration - 0.05
-    ) {
-      scheduleAdvance();
-    }
-  }
-
-  function bootstrap() {
-    attachVideoEvents();
-    monitorPlayback();
-  }
-
-  setInterval(bootstrap, 250);
-
-  window.addEventListener('yt-navigate-finish', () => {
-    advancedForCurrentVideo = false;
-    bootstrap();
-  });
-
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    bootstrap();
-  } else {
-    window.addEventListener('load', bootstrap, { once: true });
-  }
-
-  console.log('[YT-Shorts-AutoScroll] initialized');
-})();
+attachToCurrentVideo();
