@@ -30,11 +30,44 @@
     return selectors.map((s) => document.querySelector(s)).find(Boolean) || null;
   }
 
+  function getNextShortUrl() {
+    const links = Array.from(document.querySelectorAll('a[href^="/shorts/"]'))
+      .map((a) => a.getAttribute('href'))
+      .filter(Boolean);
+
+    const unique = [...new Set(links)];
+    if (!unique.length) return null;
+
+    const currentPath = location.pathname;
+    const idx = unique.findIndex((h) => h === currentPath || h.startsWith(currentPath));
+
+    if (idx >= 0 && idx + 1 < unique.length) {
+      return unique[idx + 1];
+    }
+
+    // fallback: first non-current short link
+    return unique.find((h) => h !== currentPath) || null;
+  }
+
+  function keyboardFallback() {
+    const ev = {
+      key: 'ArrowDown',
+      code: 'ArrowDown',
+      keyCode: 40,
+      which: 40,
+      bubbles: true,
+      cancelable: true
+    };
+    window.dispatchEvent(new KeyboardEvent('keydown', ev));
+    window.dispatchEvent(new KeyboardEvent('keyup', ev));
+    document.dispatchEvent(new KeyboardEvent('keydown', ev));
+    document.dispatchEvent(new KeyboardEvent('keyup', ev));
+  }
+
   function clickNext() {
     const nextBtn = getNextButton();
     if (!nextBtn) return false;
 
-    // Some Firefox builds respond better to explicit pointer/mouse events.
     nextBtn.dispatchEvent(
       new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
     );
@@ -48,6 +81,13 @@
     return true;
   }
 
+  function forceNavigateNext() {
+    const href = getNextShortUrl();
+    if (!href) return false;
+    location.href = href;
+    return true;
+  }
+
   function scheduleAdvance() {
     if (!onShortsPage()) return;
     if (advancedForCurrentVideo) return;
@@ -57,22 +97,18 @@
     lastAdvanceAt = now;
     advancedForCurrentVideo = true;
 
+    const beforePath = location.pathname;
+
     setTimeout(() => {
-      if (!clickNext()) {
-        // keyboard fallback (works in both Chrome and Firefox)
-        const ev = {
-          key: 'ArrowDown',
-          code: 'ArrowDown',
-          keyCode: 40,
-          which: 40,
-          bubbles: true,
-          cancelable: true
-        };
-        window.dispatchEvent(new KeyboardEvent('keydown', ev));
-        window.dispatchEvent(new KeyboardEvent('keyup', ev));
-        document.dispatchEvent(new KeyboardEvent('keydown', ev));
-        document.dispatchEvent(new KeyboardEvent('keyup', ev));
-      }
+      const clicked = clickNext();
+      if (!clicked) keyboardFallback();
+
+      // If click/keyboard did not advance, force URL navigation.
+      setTimeout(() => {
+        if (location.pathname === beforePath) {
+          forceNavigateNext();
+        }
+      }, 900);
     }, 500);
   }
 
